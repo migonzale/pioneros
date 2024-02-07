@@ -1,0 +1,74 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Mail\validateVote;
+use App\Voter;
+use App\Project;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
+
+class ProjectsController extends Controller
+{
+    public function list()
+    {
+        $projects = Project::inRandomOrder()->get();
+        $projects_voted = Voter::find(auth()->user()->id)->projects;
+        $intents = ($projects_voted->count() == 0) ? 3 : (3 - $projects_voted->count());
+
+        return view('frontend.projects', compact('projects', 'projects_voted', 'intents'));
+    }
+
+    public function show($slug)
+    {
+        $project = Project::where('slug', $slug)->first();
+        $total_votes = Voter::find(auth()->user()->id)->projects()->count();
+        $voter = auth()->user()->id;
+
+        return view('frontend.project', compact('project', 'total_votes'));
+    }
+
+    public function vote(Request $request)
+    {
+        $voter = Voter::find($request->get('voter'));
+
+        if($voter->projects->count() == 3) {
+            return ['status' => 'vote_limit', 'message' => 'Ya has votado por 3 proyectos'];
+        } else {
+            // Si ya votó por el proyecto
+            if($projectVoted = $voter->projects()->where('uuid', $request->get('project'))->first()) {
+                if($projectVoted->projects()->where('validate', 1)) {
+                    return ['status' => 'vote_repeated', 'message' => 'Ya has votado por este proyecto'];
+                } else {
+                    return ['status' => 'vote_pended', 'message' => 'Pendiente validación'];
+                }
+            } else {
+                $token = Str::uuid();
+                $project = Project::where('uuid', $request->get('project'))->first();
+                $project->voters()->attach($request->get('voter'), ['token' => $token]);
+
+                // Send email
+                Mail::to($voter->email)->send(new validateVote($voter, $project, $token));
+
+                return ['status' => 'vote_registered', 'message' => 'Tu voto ha sido registrado. Ahora debes validarlo en el correo'];
+            }
+        }
+    }
+
+    public function validateVote($token)
+    {
+        $project_voted = DB::table('project_voter')->where('token', $token)->get();
+
+        if($project_voted->count() > 0) {
+            $project = Project::find($project_voted[0]->project_id);
+            // Register vote
+            DB::table('project_voter')->where('token', $token)->update(['validate' => 1, 'token' => NULL]);
+
+            return redirect('/projects/' . $project->slug)->with('vote_success', $project);
+        }
+
+        return redirect('/');
+    }
+}
